@@ -1,0 +1,45 @@
+// Copyright (c) 2026 ZettaScale Technology
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+// which is available at https://www.apache.org/licenses/LICENSE-2.0.
+//
+// SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+//
+// Contributors:
+//   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
+
+syntax = "proto3";
+
+package sequenced_message;
+
+// Message format for sequence-tracked messages
+//
+// This format enables detection of out-of-sequence and missing messages.
+// Publishers MUST include this metadata with each message.
+//
+// Usage:
+//   - seq: REQUIRED, monotonically increasing per publisher
+//   - publisher_id: REQUIRED, unique and stable identifier
+//   - timestamp_ns: OPTIONAL, nanoseconds since UNIX epoch
+//   - payload: OPTIONAL, arbitrary binary data
+//
+// See MESSAGE_FORMAT.md for complete specification and validation rules.
+message SequencedMessage {
+    // Monotonically increasing sequence number (per publisher)
+    // REQUIRED: Must increment by 1 for each message
+    uint64 seq = 1;
+
+    // Unique identifier for the message publisher
+    // REQUIRED: Must be unique and stable across restarts
+    string publisher_id = 2;
+
+    // Timestamp in nanoseconds since UNIX epoch
+    // OPTIONAL: Recommended for correlation and debugging
+    optional uint64 timestamp_ns = 3;
+
+    // The actual message payload
+    // OPTIONAL: Arbitrary binary data (JSON, MessagePack, raw bytes, etc.)
+    optional bytes payload = 4;
+}

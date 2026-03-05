@@ -23,6 +23,7 @@ use std::{
     },
 };
 
+use prost::Message as ProstMessage;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 use zenoh::{
@@ -37,6 +38,11 @@ use zenoh::{
 };
 use zenoh_plugin_trait::{plugin_long_version, plugin_version, Plugin, PluginControl};
 use zenoh_util::ffi::JsonKeyValueMap;
+
+// Include generated protobuf code
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/sequenced_message.rs"));
+}
 
 const WORKER_THREAD_NUM: usize = 2;
 const MAX_BLOCK_THREAD_NUM: usize = 50;
@@ -64,10 +70,10 @@ fn spawn_runtime(task: impl Future<Output = ()> + Send + 'static) {
     }
 }
 
-/// Message format for sequence-tracked messages
+/// Message format for sequence-tracked messages (JSON representation)
 ///
 /// This format enables detection of out-of-sequence and missing messages.
-/// Publishers MUST include this metadata with each message.
+/// Publishers can use either JSON or Protocol Buffers format.
 ///
 /// # JSON Format
 /// ```json
@@ -79,12 +85,9 @@ fn spawn_runtime(task: impl Future<Output = ()> + Send + 'static) {
 /// }
 /// ```
 ///
-/// # Binary Format (Custom)
-/// For performance-critical applications, use a compact binary format:
-/// - Bytes 0-7: sequence number (u64, little-endian)
-/// - Bytes 8-15: timestamp in nanoseconds (u64, little-endian)
-/// - Bytes 16-47: publisher_id (32 bytes, UTF-8, zero-padded)
-/// - Bytes 48+: payload (variable length)
+/// # Protocol Buffers Format
+/// See proto/sequenced_message.proto for the protobuf schema.
+/// Protobuf is recommended for high-throughput scenarios (>10k msgs/sec).
 ///
 /// # Compatibility Notes
 /// - `seq` MUST be monotonically increasing per publisher
@@ -105,6 +108,41 @@ pub struct SequencedMessage {
     /// The actual message payload (flexible type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
+}
+
+/// Convert protobuf message to internal representation
+impl From<proto::SequencedMessage> for SequencedMessage {
+    fn from(proto_msg: proto::SequencedMessage) -> Self {
+        SequencedMessage {
+            seq: proto_msg.seq,
+            publisher_id: proto_msg.publisher_id,
+            timestamp_ns: proto_msg.timestamp_ns,
+            payload: None, // Protobuf payload is raw bytes, not parsed as JSON
+        }
+    }
+}
+
+/// Message parsing result
+#[derive(Debug)]
+enum ParsedMessage {
+    Json(SequencedMessage),
+    Protobuf(SequencedMessage),
+}
+
+impl ParsedMessage {
+    fn into_inner(self) -> SequencedMessage {
+        match self {
+            ParsedMessage::Json(msg) => msg,
+            ParsedMessage::Protobuf(msg) => msg,
+        }
+    }
+
+    fn format(&self) -> &'static str {
+        match self {
+            ParsedMessage::Json(_) => "JSON",
+            ParsedMessage::Protobuf(_) => "Protobuf",
+        }
+    }
 }
 
 /// Tracks sequence state for a single publisher
@@ -413,67 +451,109 @@ async fn run(
         if let Ok(sample) = sub.recv_async().await {
             let key_expr = sample.key_expr().to_string();
 
-            // Try to parse as JSON
-            match sample.payload().try_to_string() {
-                Ok(payload_str) => {
-                    match serde_json::from_str::<SequencedMessage>(&payload_str) {
-                        Ok(msg) => {
-                            let mut states = publisher_states.lock().unwrap();
-                            let state = states
-                                .entry(msg.publisher_id.clone())
-                                .or_insert_with(PublisherState::new);
+            // Try to parse message (JSON first, then protobuf)
+            let parsed_msg = parse_message(sample.payload());
 
-                            let status = state.process_sequence(msg.seq, msg.timestamp_ns);
+            match parsed_msg {
+                Ok(parsed) => {
+                    let msg = parsed.into_inner();
 
-                            match status {
-                                SequenceStatus::FirstMessage => {
-                                    info!(
-                                        "[{}] First message from publisher '{}' with seq={}",
-                                        key_expr, msg.publisher_id, msg.seq
-                                    );
-                                }
-                                SequenceStatus::InSequence => {
-                                    debug!(
-                                        "[{}] In-sequence message from '{}': seq={}",
-                                        key_expr, msg.publisher_id, msg.seq
-                                    );
-                                }
-                                SequenceStatus::Duplicate => {
-                                    warn!(
-                                        "[{}] DUPLICATE from '{}': seq={} (already received)",
-                                        key_expr, msg.publisher_id, msg.seq
-                                    );
-                                }
-                                SequenceStatus::OutOfOrder { expected, received } => {
-                                    warn!(
-                                        "[{}] OUT-OF-ORDER from '{}': expected seq={}, received seq={}",
-                                        key_expr, msg.publisher_id, expected, received
-                                    );
-                                }
-                                SequenceStatus::Missing { expected, received, gap_size } => {
-                                    error!(
-                                        "[{}] MISSING MESSAGES from '{}': expected seq={}, received seq={}, gap={}",
-                                        key_expr, msg.publisher_id, expected, received, gap_size
-                                    );
-                                }
-                            }
+                    let mut states = publisher_states.lock().unwrap();
+                    let state = states
+                        .entry(msg.publisher_id.clone())
+                        .or_insert_with(PublisherState::new);
+
+                    let status = state.process_sequence(msg.seq, msg.timestamp_ns);
+
+                    match status {
+                        SequenceStatus::FirstMessage => {
+                            info!(
+                                "[{}] First message from publisher '{}' with seq={}",
+                                key_expr, msg.publisher_id, msg.seq
+                            );
                         }
-                        Err(e) => {
+                        SequenceStatus::InSequence => {
+                            debug!(
+                                "[{}] In-sequence message from '{}': seq={}",
+                                key_expr, msg.publisher_id, msg.seq
+                            );
+                        }
+                        SequenceStatus::Duplicate => {
                             warn!(
-                                "[{}] Failed to parse message as SequencedMessage: {}",
-                                key_expr, e
+                                "[{}] DUPLICATE from '{}': seq={} (already received)",
+                                key_expr, msg.publisher_id, msg.seq
+                            );
+                        }
+                        SequenceStatus::OutOfOrder { expected, received } => {
+                            warn!(
+                                "[{}] OUT-OF-ORDER from '{}': expected seq={}, received seq={}",
+                                key_expr, msg.publisher_id, expected, received
+                            );
+                        }
+                        SequenceStatus::Missing { expected, received, gap_size } => {
+                            error!(
+                                "[{}] MISSING MESSAGES from '{}': expected seq={}, received seq={}, gap={}",
+                                key_expr, msg.publisher_id, expected, received, gap_size
                             );
                         }
                     }
                 }
                 Err(e) => {
                     warn!(
-                        "[{}] Failed to decode payload as string: {}",
+                        "[{}] Failed to parse message (tried JSON and Protobuf): {}",
                         key_expr, e
                     );
                 }
             }
         }
+    }
+
+    info!("Sequence Detector plugin stopped");
+}
+
+/// Try to parse message as JSON first, then as Protobuf
+fn parse_message(payload: &zenoh::sample::Payload) -> Result<ParsedMessage, String> {
+    // Try JSON first (UTF-8 string)
+    if let Ok(payload_str) = payload.try_to_string() {
+        if let Ok(msg) = serde_json::from_str::<SequencedMessage>(&payload_str) {
+            return Ok(ParsedMessage::Json(msg));
+        }
+    }
+
+    // Try Protobuf (binary)
+    let bytes = payload.to_bytes();
+    match proto::SequencedMessage::decode(&bytes[..]) {
+        Ok(proto_msg) => {
+            // Validate required fields
+            if proto_msg.publisher_id.is_empty() {
+                return Err("Protobuf message missing required field: publisher_id".to_string());
+            }
+            Ok(ParsedMessage::Protobuf(proto_msg.into()))
+        }
+        Err(e) => Err(format!("Failed to parse as JSON or Protobuf: {}", e)),
+    }
+}
+
+/// Try to parse message as JSON first, then as Protobuf
+fn parse_message(payload: &zenoh::sample::Payload) -> Result<ParsedMessage, String> {
+    // Try JSON first (UTF-8 string)
+    if let Ok(payload_str) = payload.try_to_string() {
+        if let Ok(msg) = serde_json::from_str::<SequencedMessage>(&payload_str) {
+            return Ok(ParsedMessage::Json(msg));
+        }
+    }
+
+    // Try Protobuf (binary)
+    let bytes = payload.to_bytes();
+    match proto::SequencedMessage::decode(&bytes[..]) {
+        Ok(proto_msg) => {
+            // Validate required fields
+            if proto_msg.publisher_id.is_empty() {
+                return Err("Protobuf message missing required field: publisher_id".to_string());
+            }
+            Ok(ParsedMessage::Protobuf(proto_msg.into()))
+        }
+        Err(e) => Err(format!("Failed to parse as JSON or Protobuf: {}", e)),
     }
 
     info!("Sequence Detector plugin stopped");

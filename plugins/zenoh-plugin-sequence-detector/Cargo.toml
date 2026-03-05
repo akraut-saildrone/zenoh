@@ -43,6 +43,7 @@ crate-type = ["cdylib"]
 futures = "0.3"
 git-version = "0.3"
 lazy_static = "1.4"
+prost = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"] }
@@ -55,6 +56,9 @@ zenoh = { path = "../../zenoh", features = [
 ] }
 zenoh-plugin-trait = { path = "../zenoh-plugin-trait" }
 zenoh-util = { path = "../../commons/zenoh-util" }
+
+[build-dependencies]
+prost-build = "0.12"
 
 [package.metadata.cargo-machete]
 ignored = ["git-version"]
