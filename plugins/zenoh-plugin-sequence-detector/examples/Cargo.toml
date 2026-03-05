@@ -1,0 +1,18 @@
+[package]
+name = "sequence-detector-examples"
+version = "0.1.0"
+edition = "2021"
+
+[[example]]
+name = "publisher"
+path = "publisher.rs"
+
+[dependencies]
+chrono = "0.4"
+clap = { version = "4.0", features = ["derive"] }
+hostname = "0.4"
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+zenoh = { path = "../../../zenoh" }

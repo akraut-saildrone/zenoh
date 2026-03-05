@@ -1,0 +1,181 @@
+// Example zenohd configuration with sequence-detector plugin
+//
+// Usage:
+//   zenohd --config example-config.json5
+//
+// This configuration demonstrates various plugin settings for different use cases.
+
+{
+  // Basic Example: Monitor all messages under "sensors/" with default settings
+  plugins: {
+    sequence_detector: {
+      // Key expression pattern to monitor (supports wildcards)
+      selector: "sensors/**/data",
+
+      // Optional: How often to log statistics (seconds)
+      // Default: 60 seconds
+      stats_interval_secs: 30,
+
+      // Optional: Publish statistics to this key
+      // If omitted, stats are only logged to console/file
+      stats_key: "admin/sequence/stats"
+    }
+  }
+}
+
+// ============================================================================
+// Additional Configuration Examples
+// ============================================================================
+
+/*
+// Example 1: Minimal Configuration (monitor everything under "sequenced/")
+{
+  plugins: {
+    sequence_detector: {
+      selector: "sequenced/**"
+    }
+  }
+}
+
+// Example 2: High-Frequency Monitoring (short stats interval)
+{
+  plugins: {
+    sequence_detector: {
+      selector: "iot/devices/*",
+      stats_interval_secs: 10,
+      stats_key: "monitoring/sequence_stats"
+    }
+  }
+}
+
+// Example 3: Multiple Specific Patterns
+// Note: The plugin currently supports one selector. To monitor multiple
+// patterns, either:
+//   - Use a wildcard that covers all (e.g., "sensors/**")
+//   - Run multiple zenohd instances with different configs
+//   - Use key expression intersections (e.g., "sensors/*")
+{
+  plugins: {
+    sequence_detector: {
+      selector: "sensors/*",  // Matches sensors/temp, sensors/pressure, etc.
+      stats_interval_secs: 60
+    }
+  }
+}
+
+// Example 4: Production Monitoring Setup
+{
+  plugins: {
+    sequence_detector: {
+      selector: "prod/**/metrics",
+      stats_interval_secs: 300,  // 5 minutes
+      stats_key: "admin/monitoring/sequence_detector/stats"
+    }
+  }
+}
+
+// Example 5: Development/Testing Setup
+{
+  plugins: {
+    sequence_detector: {
+      selector: "test/sequenced/**",
+      stats_interval_secs: 5,  // Very frequent for quick feedback
+      stats_key: "test/stats"
+    }
+  }
+}
+
+// Example 6: Stats-Only Mode (no external publication)
+{
+  plugins: {
+    sequence_detector: {
+      selector: "app/messages/**",
+      stats_interval_secs: 120
+      // No stats_key - stats only appear in logs
+    }
+  }
+}
+*/
+
+// ============================================================================
+// Full zenohd Configuration Example
+// ============================================================================
+
+/*
+// This shows the plugin integrated into a complete zenohd config:
+{
+  // Zenoh configuration
+  mode: "router",
+
+  // Listen on all interfaces
+  listen: {
+    endpoints: ["tcp/0.0.0.0:7447"]
+  },
+
+  // Plugin configuration
+  plugins: {
+    // Sequence detector plugin
+    sequence_detector: {
+      selector: "sensors/**/data",
+      stats_interval_secs: 60,
+      stats_key: "admin/sequence_stats"
+    },
+
+    // REST API plugin (optional, useful for debugging)
+    rest: {
+      http_port: 8000
+    },
+
+    // Storage manager (optional, for persistence)
+    storage_manager: {
+      volumes: {}
+    }
+  },
+
+  // Logging configuration
+  logging: {
+    // Set to "debug" to see all in-sequence messages
+    // Set to "info" to see anomalies and periodic stats
+    // Set to "warn" to only see problems
+    level: "info"
+  }
+}
+*/
+
+// ============================================================================
+// Integration with Other Zenoh Features
+// ============================================================================
+
+/*
+// Example: Sequence Detection + Storage + REST API
+{
+  mode: "router",
+
+  plugins: {
+    // Monitor sequences
+    sequence_detector: {
+      selector: "sensors/**",
+      stats_interval_secs: 60,
+      stats_key: "admin/seq_stats"
+    },
+
+    // Store stats for historical analysis
+    storage_manager: {
+      volumes: {
+        seq_stats: {
+          backend: "memory",
+          paths: ["admin/seq_stats"]
+        }
+      }
+    },
+
+    // Query via REST API
+    rest: {
+      http_port: 8000
+    }
+  }
+}
+
+// Then query stats with:
+//   curl http://localhost:8000/admin/seq_stats
+*/
